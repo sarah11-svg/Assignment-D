@@ -1,0 +1,146 @@
+---
+title: "Buoy"
+format: pdf
+editor: visual
+---
+
+```{r, warning = FALSE, message=FALSE}
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(zoo)
+library(tibble)
+library(readr)
+```
+
+Getting Buoy Data
+
+```{r, warning=FALSE, message=FALSE}
+file_root <- "https://www.ndbc.noaa.gov/view_text_file.php?filename=44013h"
+tail <- ".txt.gz&dir=data/historical/stdmet/"
+
+load_buoy_data1 <- function(year) {
+  path <- paste0(file_root, year, tail)
+  
+  
+  if (year < 2007) {
+  header <- scan(path, what = 'character', nlines = 1)
+  buoy <- read.table(path, fill = TRUE, header = TRUE, sep = "")
+  buoy <- add_column(buoy, mm = NA, .after = "hh")
+  buoy <- add_column(buoy, TIDE = NA, .after = "VIS")
+    
+  } else {
+    header <- scan(path, what = 'character', nlines = 1)  
+    buoy <- fread(path, header = FALSE, skip = 1, fill = TRUE)
+
+    setnames(buoy, header)
+  }
+  
+  return(buoy)
+}
+
+all_data1 <- lapply(1985:2024, load_buoy_data1)
+
+combined_data1 <- rbindlist(all_data1, fill = TRUE)
+```
+
+```{r}
+load_buoy_data <- function(year) {
+  path <- paste0(file_root, year, tail)
+
+  header <- scan(path, what = 'character', nlines = 1)
+  num_columns <- length(header)  
+
+  if (num_columns == 16) {
+    buoy <- read.table(path, fill = TRUE, header = TRUE, sep = "")
+    buoy <- add_column(buoy, mm = NA, .after = "hh")
+    buoy <- add_column(buoy, TIDE = NA, .after = "VIS")
+
+  } else if (num_columns == 17) {
+    buoy <- read.table(path, fill = TRUE, header = TRUE, sep = "")
+    buoy <- add_column(buoy, TIDE = NA, .after = "VIS")
+
+  } else {
+    buoy <- fread(path, header = FALSE, skip = 1, fill = TRUE)
+    setnames(buoy, header)
+  }
+
+  return(buoy)
+}
+all_data <- lapply(1985:2024, load_buoy_data)
+combined_data <- rbindlist(all_data, fill = TRUE)
+```
+
+```{r}
+combined_data1 <- combined_data1 %>%
+  mutate(across(any_of(c("YY", "#YY", "YYYY")), as.character)) %>%
+  mutate(
+    YY = as.character(YY),
+    `#YY` = as.character(`#YY`),
+    YYYY = as.character(YYYY)
+  )
+
+# Combine year columns safely using coalesce
+combined_data1 <- combined_data1 %>%
+  mutate(YYYY = coalesce(YYYY, `#YY`, YY))
+combined_data1 <- combined_data1 %>%
+  mutate(BAR = coalesce(as.numeric(BAR), as.numeric(PRES)),  # Convert BAR and PRES to numeric
+    WD = coalesce(as.numeric(WD), as.numeric(WDIR)))
+
+combined_data1 <- combined_data1 %>%
+  select(-TIDE, -TIDE.1, -mm,- WDIR, -PRES,-`#YY`,-YY)
+
+combined_data1$datetime <- ymd_h(paste(combined_data1$Year, combined_data1$MM, combined_data1$DD, combined_data1$hh, sep = "-"))
+
+combined_data1 <- combined_data1 %>%
+  mutate(across(everything(), 
+                ~ na_if(as.numeric(as.character(.)), 99) %>%
+                na_if(999) %>%
+                na_if(9999)))
+
+#summary(combined_data)
+str(combined_data1)
+#str(combined_data$datetime)
+if (!inherits(combined_data1$datetime, "POSIXct")) {
+  combined_data1$datetime <- ymd_h(paste(combined_data1$YYYY, combined_data1$MM, combined_data1$DD, combined_data1$hh, sep = "-"))
+}
+```
+
+```{r}
+combined_data1 <- combined_data1 %>%
+  mutate(Year = year(datetime)) %>% 
+  select(-YYYY)
+
+yearly_avg_temp <- combined_data1 %>%
+  group_by(Year) %>%
+  summarise(
+    avg_air_temp = mean(ATMP, na.rm = TRUE),
+    avg_water_temp = mean(WTMP, na.rm = TRUE)
+  )
+ggplot(yearly_avg_temp, aes(x = Year)) +
+  geom_line(aes(y = avg_air_temp, color = "Air Temperature"), size = 1) +
+  geom_line(aes(y = avg_water_temp, color = "Water Temperature"), size = 1) +
+  labs(title = "Temperature Trends Over Time",
+       x = "Year", 
+       y = "Temperature (°C)", 
+       color = "Legend") +
+  theme_minimal()
+
+
+```
+
+```{r}
+combi <- combined_data1 %>%
+  mutate(Year = lubridate::year(datetime))
+
+na_summary <- combi %>%
+  group_by(Year) %>%
+  summarise(
+    air_temp_NA_count = sum(is.na(ATMP)),
+    water_temp_NA_count = sum(is.na(WTMP)),
+    total_rows = n()
+  ) %>%
+  arrange(desc(air_temp_NA_count), desc(water_temp_NA_count))
+na_summary
+```
